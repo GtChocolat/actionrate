@@ -1,0 +1,389 @@
+---
+title: "Beer and peanuts example"
+author: "Kiyoshi YONEDA"
+date: '2015-08-02 -- 2015-09-22'
+output:
+  html_document:
+    keep_md: no
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+# Prepare the solver
+
+To build the conversion and related programas you go like this:
+
+```{r build, eval = FALSE}
+library(knitr)
+purl("armax.Rmd"     , output = "armax.R"     , documentation = 1)
+purl("armax-plot.Rmd", output = "armax-plot.R", documentation = 1)
+purl("armax-cd.Rmd"  , output = "armax-cd.R"  , documentation = 1)
+```
+
+Assume the above has been done.
+To load `armax.R` and related programas do
+
+```{r source, results = "hide", message = FALSE}
+source("armax.R") # solution progs
+```
+
+# Build the model to solve
+
+## Problem
+
+You wish to drink beer eating roasted peanuts.
+There is a desired beer-to-peanuts ratio.
+You are willing to pay a certain amount of money, but not too much.
+You accept to gain some weight, but not too much, either.
+How much should you eat and drink?
+Should you do that at all?
+
+## Formulation
+
+The items to consider are:
+
+- `beer`                     in *ml*,   milliliters
+- `peanuts`                  in *g* ,   grams
+- `ratio` of beer to peanuts in *ml/g*
+- `cost`                     in *yen*
+- `energy`                   in *kcal*, kilocalories
+
+For each item you need two pieces of information:
+
+- a criterion to judge how desirable the value is when considerig only this item;
+- a causality function describing how values of other items affect the value of this item.
+
+### Beer
+
+First, make a data structure template for beer.
+```{r}
+(beer <- template.item("beer"))
+```
+The structure consists of:
+
+- `$chr`: name in characters
+- `$unit`: measurement unit 
+- `$tab`: table consisting of
+    + `y`: value of the item
+    + `p`: corresponding desirability of the value, $0 \le p \le 1$
+- `caus`: causality relating values of other items to the value of this item
+
+`y` and `p` in `$tab` define how desirable the amount `y` of beer is.
+The largest value of `p`, which is 1 in this case, means that if the amount `y` of beer is 350 ml, then the decision maker takes the action of drinking the beer with probability 1 when all other items have desirability of 1.
+The value `rare` for `y` $= 200$ means that if the amount of beer is only 200 ml, the decision maker is unlikely to take the trouble to drink the beer even when the desirability of all other items is 1.
+Likewise, she doesn't want to drink more then 900 ml beer.
+
+For 300 ml of beer, she takes the action with probability 0.9 when the desirability of all other items is 1.
+For 450 and 500 ml, the probability is 0.8 and 0.6, respectively.
+
+```{r}
+beer$unit <- "[ml]"
+#beer$grade <- TRUE
+beer$tab <- data.frame(y = c( 200, 300, 350, 450, 500, 900 ),
+                       p = c(rare,  .9,   1,  .8,  .6, rare))
+beer$caus <- function(y) y["beer"]
+beer <- init.item(beer)
+```
+
+The causality `caus` in this case is the quantity of beer itself
+
+$$
+y_{\text{beer}} := y_{\text{beer}} \quad \text{[ml]}
+$$
+
+refrecting the perception that one of the outcomes of drinking beer is that you have drunk the beer.
+To drink the beer, which is the cause, is on the right hand side of the equation, whereas the same as an outcome is on the left.
+In other words, the causality relationship between the amout of beer drunk as action and the amount of beer drunk as an outcome is the identity transformation: the cause by itself consists a part of the outcomes.
+
+The last line with `init.item` sets up auxiliary tables which will be necessary to reduce the problem to the least squares.
+It results in a structure such as:
+
+```{r}
+beer
+```
+The details of `$tab` are:
+
+- `y`: amout of beer in ml
+- `p`: desirability of `y`
+- `l`: $- \log p$
+- `z`: normalized `y`; 
+if $y < \max [\cdots, y_i, \cdots]$ then $- l^{1/2}$ else $l^{1/2}$
+- `a0`, `a1`: coefficients which define the linear bijection between `z` and `y`
+
+This is easier to read:
+
+```{r}
+print.item(beer)
+```
+The dots in 
+
+```{r}
+item.plot(beer, "yp", 0)
+```
+
+represent the $(y, p)$ pairs in the above table.
+The solid line interpolates those node points in such a way that the transformation 
+$z \mapsto y$
+is a piecewise linear bijection.
+These graphs illustrate how the bijection works:
+```{r}
+item.plot(beer, "all", 0)
+```
+
+The pane $(1, 2)$ is the same as the previous graph.
+By taking its logarithm and flipping it upside down, it is transformed into the graph in pane $(2, 2)$, which is the loss version $(y, \ell)$ of $(y, p)$.
+The pane $(3, 2)$ is just the identity transformation $y \mapsto y$.
+The pane $(3, 1)$ is the crucial piecewise linear bijection $z \mapsto y$.
+With this transformation the pane $(2, 1)$ is mapped to the pane $(2, 2)$, and the pane $(1, 1)$ is mapped to the pane $(1, 2)$.
+
+Since pane $(1, 1)$ is essentially the normal density, the least squares may be invoked whose subloss function is the quadratic function in pane $(2, 1)$.
+Note that graphs in panes $(1, 2)$ and $(2, 2)$ are not differentiable at the node points.
+Since the causality `caus` is given in terms of $y$ rather than $z$, for each iteration in optimization of $\mathrm{p}(z)$ or equivalently $\mathrm{\ell}(z)$ you need the transformation
+$$
+z \stackrel{\beta}{\mapsto} y \stackrel{\mathrm{f}}{\mapsto} y \stackrel{\beta^{-1}}{\mapsto} z
+$$
+where $\beta$ is the piecewise linear bijection in pane $(3, 1)$.
+This implies that the optimization method should rely only to the subgradient rather than the gradient.
+
+All other items have similar structures as will be illustrated subsequently.
+
+### Peanuts
+
+```{r}
+peanuts      <- template.item("peanuts")
+peanuts$unit <- "[g]"
+peanuts$tab  <- data.frame(y = c(   3, 15, 50  ),
+                           p = c(rare,  1, rare))
+peanuts$caus <- f(y, y["peanuts"])
+peanuts      <- init.item(peanuts)
+print.item(peanuts)
+```
+The causality is again
+$$
+y_{\text{peanuts}} := y_{\text{peanuts}} \quad \text{[g]}
+$$
+
+```{r}
+item.plot(peanuts, "all", 0)
+```
+
+### Beer to peanuts ratio
+
+```{r}
+ratio <- template.item("ratio")
+ratio$unit <- "[ml/g]"
+#ratio$grade <- TRUE
+ratio$tab <- data.frame(y = c(   7, 350/15,   40), 
+                        p = c(rare,      1, rare))
+ratio$caus <- f(y, y["beer"]/y["peanuts"])
+ratio <- init.item(ratio)
+print.item(ratio)
+```
+This time the causality is
+$$
+y_{\text{ratio}} := \frac{y_{\text{beer}}}{y_{\text{peanuts}}} \quad \text{[ml/g]}
+$$
+Although the most desirable ratio is 350 ml beer for 15 g peanuts, this is slack since any ratio from 7/1 to 40/1 is acceptable.
+
+```{r}
+item.plot(ratio, "all", 0)
+```
+
+### Cost
+
+```{r}
+cost      <- template.item("cost")
+cost$unit <- "[yen]"
+#cost$grade <- TRUE
+cost$tab  <- data.frame(y = c(   0, 200, 800, 900, 950 ),
+                        p = c(rare,   1,  .8,  .3, rare))
+cost$caus <- function(y, const = 200,
+                      beer_price = 100/100, peanuts_price = 300/50) {
+    const + beer_price*y["beer"] + peanuts_price*y["peanuts"]}
+cost      <- init.item(cost)
+print.item(cost)
+```
+
+This desirability indicates that it's ok so long as the cost is between 200 and 900 yen.
+
+The causality `caus` for the cost depends on the two independent variables `beer` and `peanuts`.
+The fixed cost for serving is 200 yen, with the rest proportional to the quantities of `beer` and `peanuts`.
+
+$$
+y_{\text{cost}} := \text{const} + \text{beer_price} \times y_{\text{beer}} + \text{peanuts_price} \times y_{\text{peanuts}} \quad \text{[yen]} \\
+\text{const} := 200 \quad \text{[yen]} \\
+\text{beer_price} := \frac{100}{100} = 1 \quad \text{[yen/ml]} \\
+\text{peanuts_price} := \frac{300}{50} = 6 \quad \text{[yen/g]} 
+$$
+
+
+```{r}
+item.plot(cost, "all", 0)
+```
+
+### Energy
+
+```{r}
+energy      <- template.item("energy")
+energy$unit <- "[kcal]"
+#energy$grade <- TRUE
+energy$tab  <- data.frame(y = c(   0, 50, 100, 200, 250, 300 ),
+                          p = c(rare, .9,   1,  .5, .15, rare))
+energy$caus <- function(y, per_beer_ml = 142/350, per_peanuts_g = 592/100) {
+    per_beer_ml*y["beer"] + per_peanuts_g*y["peanuts"]}
+energy      <- init.item(energy)
+print.item(energy)
+```
+
+$$
+y_{\text{energy}} := \text{beer_energy} \times y_{\text{beer}} + \text{peanuts_energy} \times y_{\text{peanuts}} \quad \text{[kcal]} \\
+\text{per_beer_ml} := \frac{142}{350} \approx 0.406 \quad \text{[kcal/ml]} \\
+\text{per_peanuts_g} := \frac{592}{100} = 5.92 \quad \text{[kcal/g]} 
+$$
+
+```{r}
+item.plot(energy, "all", 0)
+```
+
+# Arrange the basket
+
+A basket is a set of items.
+If an item is in a basket, it is used as a part of the model; otherwise the item is excluded.
+
+```{r}
+beerpeanuts <- list(beer = beer, peanuts = peanuts,
+                    ratio = ratio, cost = cost, energy = energy)
+class(beerpeanuts) <- "basket"
+```
+
+In this case, all items are included into the basket.
+The basket's name is `beerpeanuts`.
+
+## Independent variables
+
+From within the basket, choose independent variables.
+
+```{r}
+ind <- c("beer", "peanuts")
+```
+
+These items must have the identity causality: the cause is by itself the outcome.
+Check `beer$caus` and `peanuts$cause` to verify.
+
+## Residue functions
+
+The residual function is defined by `resfun.basket` which takes `z_ind` and the basket name as arguments.
+Depending on the optimization software, the residue function `resfun` to be passed to the optimization must be defined with single variable `z_ind`.
+Also, to draw a contour you need a two-variable residue function which is `resfun` with some of the independent variables fixed.
+For convenience, the two function `resfun` and `resfun2` are defined herein.
+
+```{r}
+resfun <- f(z_ind, resfun.basket(z_ind, beerpeanuts))
+resfun2 <- f(x, y, resfun(c(x, y))) # resfun in 2 vars to plot contour
+```
+
+In this case there is no need to fix any of the independent variables `ind` since there are only two, `beer` and `peanuts` to begin with.
+
+## Initial values
+
+The optimization is performed in normalized variables `z` rather than in the original amounts `y`.
+So their initial values are given in `z` rather than `y`.
+
+```{r}
+zs <- c(beer = 0.7, peanuts = 0.4, ratio = 0, cost = 0.3, energy = 0.4) 
+    # global var
+```
+
+If you hve no plausible initial values try starting with all items $=0$.
+
+# Solve
+
+There is a wide range of optimizers available.
+You could try `nlm` which is the generic optimizer, or `optim` for a Newton-type.
+
+```{r}
+(res1.optim <- optim(rep(0, length(ind)), 
+                    function(ind) loss.basket(ind, beerpeanuts)))
+```
+
+You could also try `nls` as well which is the default nonlinear least squares, but a better candidate would be `nlfb` in `nlmrt` library which is expected to be slower but more robust.
+
+```{r}
+install_load("nlmrt")
+(res1.nlfb <- nlfb(rep(0, length(ind)), resfun, 
+                  lower = -5, upper = 5, trace = FALSE))
+```
+
+This version is with a home-brew coodrinate descent method `armcd`;
+the advantage being simple implementation.
+Since `trace` is set to `TRUE`, it produces the trace of iterations:
+`beer`, `peanuts`, and `P` where $P$ is an indication of total desirability;
+nonnegative, usually less than or equal to one, and the bigger the better.
+
+```{r}
+(res1.cd <- armcd(c(1, 2), beerpeanuts, trace = TRUE))
+```
+
+`$z` here show the optimal `z` values.
+`$P` is the desirability, which may be interpreted as the probability that this combination of `$z` will actually be put into action by the decision maker.
+
+`$delta` is an indication of how accurate the solution is; the smaller the better.
+`$iters` is the number of iterations to reach the solution; the smaller the faster.
+Note that there are 8 trace values whereas `$iters` is 4.
+This is because the trace prints an output each time a coordinate variable is changed.
+Since there are two coordinates `beer` and `peanuts`, the total number of output is $2 \times 4 = 8$.
+
+# Report
+
+Before doing anything else, save the present value of `zs` which contains the solution:
+```{r}
+(zs1.cd <- zs)
+```
+More visually,
+```{r}
+p.plot(zs1.cd)
+```
+which shows that the `energy` is the most unsatisfactory among the items by being much more than the ideal amount.
+
+Since there are only two independent variables `beer` and `peanuts`, the indifference curves may be illustrated as:
+```{r}
+#contour()
+contour(150,150)
+```
+
+The values given in normalized variables $z$ may be converted into the original measurement units by
+```{r}
+round(y.basket(zs1.cd,beerpeanuts))
+```
+
+# Model revised
+
+Now that we know `energy` to be the major source of frustration, we can try to change the beer to a half-calorie brand.
+The new `energy` would be:
+
+```{r}
+energy$caus <- function(y, per_beer_ml = 142/350/2, per_peanuts_g = 592/100) {
+    per_beer_ml*y["beer"] + per_peanuts_g*y["peanuts"]}
+energy <- init.item(energy)
+
+beerpeanuts2 <- list(beer = beer, peanuts = peanuts, ratio = ratio, cost = cost, energy = energy)
+resfun <- function(z_ind) {resfun.basket(z_ind, beerpeanuts2)}
+```
+
+```{r}
+(res2.cd <- armcd(c(1, 2), beerpeanuts2, trace = FALSE))
+```
+
+```{r}
+zs2.cd <- zs
+p.plot(zs2.cd)
+round(y.basket(zs2.cd, beerpeanuts2))
+```
+
+The `energy` remains to be the greatest source of frustration.
+Although the consumption of beer increases only by 11%, the action probability $P$ jumps up from 0.35 to 0.72.
+
+This model assumes that there is no difference in taste between the normal and half-calorie beers, which is actually unlikely.
+Inclusion of taste as an outcome would make the model more realistic,
+in which case a relationship between energy and taste would be needed.
