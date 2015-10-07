@@ -133,6 +133,6 @@ loss.basket <- function(z_ind, basket) {
 # resfun.mk <- f(z_ind, beerpeanuts, f(z_ind, resfun.basket(z_ind, beerpeanuts)))
 # resfun2 <- f(x, y, resfun(c(x, y))) # resfun in 2 vars to plot contour
 
-source("armax-plot.R")
-source("armax-cd.R")
-#source("armax-beerpeanuts.R")
+source("plot.R")
+source("cd.R")
+#source("beerpeanuts.R")
